@@ -67,3 +67,15 @@ The plugin opens the browser automatically by default when auth starts. Set plug
 The local callback server uses an ephemeral port by default, so it should not collide with common development ports. Set `authPort` only if your broker requires a fixed callback port.
 
 For deployments where the broker requires identity headers during auth-start, configure `startHeaders` in plugin options. This is intended for controlled enterprise/MDM environments.
+
+## Optional Auto-login
+
+Set `autoLogin: true` to have the plugin start the same browser auth flow automatically on the first model request when no usable provider credential is present.
+
+```json
+{
+  "providerID": "openrouter-broker",
+  "brokerUrl": "https://your-broker.example.com",
+  "autoLogin": true
+}
+```

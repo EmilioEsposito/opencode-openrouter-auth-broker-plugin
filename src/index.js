@@ -121,12 +121,48 @@ async function exchangeCode(brokerUrl, code) {
   return body;
 }
 
-export default async function openRouterAuthBrokerPlugin(_ctx, options = {}) {
+async function runBrokerLogin({ brokerUrl, authPort, startHeaders, autoOpenBrowser }) {
+  if (!brokerUrl) throw new Error('Missing required plugin option: brokerUrl');
+  const callback = await startCallbackServer(authPort);
+  const returnTo = `http://127.0.0.1:${callback.port}/callback`;
+  const url = await resolveAuthUrl({ brokerUrl, returnTo, startHeaders });
+  if (autoOpenBrowser) openBrowser(url);
+  const code = await callback.callbackPromise;
+  return exchangeCode(brokerUrl, code);
+}
+
+async function saveOpenCodeAuth(client, providerID, credentials) {
+  if (!client?.auth?.set) return;
+  const auth = {
+    type: 'api',
+    key: credentials.openrouter_api_key,
+    metadata: {
+      broker_refresh_token: credentials.broker_refresh_token ?? '',
+      openrouter_key_hash: credentials.openrouter_key_hash ?? '',
+      openrouter_key_label: credentials.openrouter_key_label ?? '',
+      openrouter_key_expires_at: credentials.openrouter_key_expires_at ?? '',
+    },
+  };
+
+  try {
+    await client.auth.set({ path: { id: providerID }, body: auth });
+    return;
+  } catch {}
+
+  try {
+    await client.auth.set({ providerID, auth });
+  } catch {}
+}
+
+export default async function openRouterAuthBrokerPlugin(ctx, options = {}) {
   const providerID = options.providerID ?? DEFAULT_PROVIDER_ID;
   const brokerUrl = options.brokerUrl;
   const authPort = Number(options.authPort ?? DEFAULT_AUTH_PORT);
   const startHeaders = Array.isArray(options.startHeaders) ? options.startHeaders : [];
   const autoOpenBrowser = options.openBrowser !== false;
+  const autoLogin = options.autoLogin === true;
+  let autoLoginPromise;
+  let cachedApiKey;
 
   return {
     auth: {
@@ -160,20 +196,15 @@ export default async function openRouterAuthBrokerPlugin(_ctx, options = {}) {
           type: 'oauth',
           label: 'Browser sign-in',
           async authorize() {
-            if (!brokerUrl) throw new Error('Missing required plugin option: brokerUrl');
-            const callback = await startCallbackServer(authPort);
-            const returnTo = `http://127.0.0.1:${callback.port}/callback`;
-            const url = await resolveAuthUrl({ brokerUrl, returnTo, startHeaders });
-            if (autoOpenBrowser) openBrowser(url);
+            const loginPromise = runBrokerLogin({ brokerUrl, authPort, startHeaders, autoOpenBrowser });
 
             return {
-              url,
+              url: 'about:blank',
               instructions: 'Complete OpenRouter authorization in your browser. OpenCode will store the broker-managed OpenRouter API key when authorization completes.',
               method: 'auto',
               async callback() {
                 try {
-                  const code = await callback.callbackPromise;
-                  const credentials = await exchangeCode(brokerUrl, code);
+                  const credentials = await loginPromise;
                   return {
                     type: 'success',
                     provider: providerID,
@@ -201,9 +232,48 @@ export default async function openRouterAuthBrokerPlugin(_ctx, options = {}) {
     },
     config(config) {
       const provider = config.provider?.[providerID];
-      if (provider?.options?.apiKey === '') {
+      if (!provider) return;
+      provider.options ??= {};
+      if (provider.options.apiKey === '') {
         delete provider.options.apiKey;
       }
+      if (!autoLogin) return;
+
+      const configuredFetch = provider.options.fetch;
+      provider.options.fetch = async (input, init = {}) => {
+        const headers = new Headers(input instanceof Request ? input.headers : undefined);
+        if (init.headers) {
+          const entries = init.headers instanceof Headers
+            ? init.headers.entries()
+            : Array.isArray(init.headers)
+              ? init.headers
+              : Object.entries(init.headers);
+          for (const [key, value] of entries) {
+            if (value !== undefined) headers.set(key, String(value));
+          }
+        }
+
+        const existing = headers.get('Authorization');
+        if (existing && existing !== 'Bearer ' && !existing.endsWith('undefined')) {
+          return (configuredFetch ?? fetch)(input, { ...init, headers });
+        }
+
+        if (!cachedApiKey) {
+          autoLoginPromise ??= runBrokerLogin({ brokerUrl, authPort, startHeaders, autoOpenBrowser })
+            .then(async (credentials) => {
+              cachedApiKey = credentials.openrouter_api_key;
+              await saveOpenCodeAuth(ctx.client, providerID, credentials);
+              return credentials;
+            })
+            .finally(() => {
+              autoLoginPromise = undefined;
+            });
+          await autoLoginPromise;
+        }
+
+        headers.set('Authorization', `Bearer ${cachedApiKey}`);
+        return (configuredFetch ?? fetch)(input, { ...init, headers });
+      };
     },
   };
 }
