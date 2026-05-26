@@ -182,36 +182,7 @@ export default async function openRouterAuthBrokerPlugin(ctx, options = {}) {
       async loader(getAuth) {
         const auth = await getAuth();
         if (auth?.type === 'api' && auth.key) {
-          return {
-            apiKey: 'opencode-openrouter-auth-broker',
-            async fetch(input, init = {}) {
-              const buildHeaders = (apiKey) => {
-                const headers = new Headers(input instanceof Request ? input.headers : undefined);
-                if (init.headers) {
-                  const entries = init.headers instanceof Headers
-                    ? init.headers.entries()
-                    : Array.isArray(init.headers)
-                      ? init.headers
-                      : Object.entries(init.headers);
-                  for (const [key, value] of entries) {
-                    if (value !== undefined) headers.set(key, String(value));
-                  }
-                }
-                headers.set('Authorization', `Bearer ${apiKey}`);
-                return headers;
-              };
-
-              let headers = buildHeaders(auth.key);
-              let response = await fetch(input, { ...init, headers });
-              if (response.status !== 401 || !auth.metadata?.broker_refresh_token) return response;
-
-              const credentials = await rotateCredentials(brokerUrl, auth.metadata.broker_refresh_token);
-              await saveOpenCodeAuth(ctx.client, providerID, credentials);
-              headers = buildHeaders(credentials.openrouter_api_key);
-              response = await fetch(input, { ...init, headers });
-              return response;
-            },
-          };
+          return { apiKey: auth.key };
         }
         return {};
       },
