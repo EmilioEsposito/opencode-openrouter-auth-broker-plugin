@@ -2,8 +2,7 @@ import { execFile } from 'node:child_process';
 import http from 'node:http';
 
 const DEFAULT_PROVIDER_ID = 'openrouter-broker';
-const DEFAULT_BROKER_URL = 'http://localhost:3000';
-const DEFAULT_AUTH_PORT = 19877;
+const DEFAULT_AUTH_PORT = 0;
 
 function brokerEndpoint(brokerUrl, path) {
   return `${String(brokerUrl).replace(/\/$/, '')}${path}`;
@@ -21,7 +20,7 @@ function parseStartHeaders(values = []) {
   return headers;
 }
 
-function waitForCallback(port, path = '/callback') {
+function startCallbackServer(port, path = '/callback') {
   return new Promise((resolve, reject) => {
     let completedCode;
     let closeTimer;
@@ -49,16 +48,28 @@ function waitForCallback(port, path = '/callback') {
       res.end('<!doctype html><h1>OpenRouter auth complete</h1><p>You can close this window.</p>');
       if (!completedCode) {
         completedCode = code;
-        resolve(code);
+        resolveCode(code);
         closeTimer = setTimeout(() => server.close(), 15000);
       }
+    });
+
+    let resolveCode;
+    const callbackPromise = new Promise((resolveCallback) => {
+      resolveCode = resolveCallback;
     });
 
     server.on('error', (error) => {
       if (closeTimer) clearTimeout(closeTimer);
       reject(error);
     });
-    server.listen(port, '127.0.0.1');
+    server.listen(port, '127.0.0.1', () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') {
+        reject(new Error('Could not determine callback server port'));
+        return;
+      }
+      resolve({ port: address.port, callbackPromise });
+    });
   });
 }
 
@@ -112,7 +123,7 @@ async function exchangeCode(brokerUrl, code) {
 
 export default async function openRouterAuthBrokerPlugin(_ctx, options = {}) {
   const providerID = options.providerID ?? DEFAULT_PROVIDER_ID;
-  const brokerUrl = options.brokerUrl ?? DEFAULT_BROKER_URL;
+  const brokerUrl = options.brokerUrl;
   const authPort = Number(options.authPort ?? DEFAULT_AUTH_PORT);
   const startHeaders = Array.isArray(options.startHeaders) ? options.startHeaders : [];
   const autoOpenBrowser = options.openBrowser !== false;
@@ -149,8 +160,9 @@ export default async function openRouterAuthBrokerPlugin(_ctx, options = {}) {
           type: 'oauth',
           label: 'Browser sign-in',
           async authorize() {
-            const returnTo = `http://127.0.0.1:${authPort}/callback`;
-            const callbackPromise = waitForCallback(authPort);
+            if (!brokerUrl) throw new Error('Missing required plugin option: brokerUrl');
+            const callback = await startCallbackServer(authPort);
+            const returnTo = `http://127.0.0.1:${callback.port}/callback`;
             const url = await resolveAuthUrl({ brokerUrl, returnTo, startHeaders });
             if (autoOpenBrowser) openBrowser(url);
 
@@ -160,7 +172,7 @@ export default async function openRouterAuthBrokerPlugin(_ctx, options = {}) {
               method: 'auto',
               async callback() {
                 try {
-                  const code = await callbackPromise;
+                  const code = await callback.callbackPromise;
                   const credentials = await exchangeCode(brokerUrl, code);
                   return {
                     type: 'success',

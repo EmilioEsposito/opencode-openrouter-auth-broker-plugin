@@ -64,4 +64,6 @@ OpenCode will print/open the browser auth URL and wait for the localhost callbac
 
 The plugin opens the browser automatically by default when auth starts. Set plugin option `openBrowser: false` or environment variable `OPENCODE_OPENROUTER_AUTH_NO_OPEN=1` to only print the URL.
 
+The local callback server uses an ephemeral port by default, so it should not collide with common development ports. Set `authPort` only if your broker requires a fixed callback port.
+
 For deployments where the broker requires identity headers during auth-start, configure `startHeaders` in plugin options. This is intended for controlled enterprise/MDM environments.
