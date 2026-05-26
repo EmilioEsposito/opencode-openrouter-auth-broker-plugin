@@ -1,14 +1,40 @@
 {
   "name": "opencode-openrouter-auth-broker-plugin",
   "version": "0.1.0",
-  "private": true,
+  "private": false,
   "type": "module",
   "description": "OpenCode plugin for custom broker-managed OpenRouter credentials",
-  "exports": "./src/index.js",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/EmilioEsposito/opencode-openrouter-auth-broker-plugin.git"
+  },
+  "bugs": {
+    "url": "https://github.com/EmilioEsposito/opencode-openrouter-auth-broker-plugin/issues"
+  },
+  "homepage": "https://github.com/EmilioEsposito/opencode-openrouter-auth-broker-plugin#readme",
+  "keywords": [
+    "opencode",
+    "openrouter",
+    "auth",
+    "oauth",
+    "broker",
+    "plugin"
+  ],
+  "exports": "./dist/index.js",
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "scripts": {
-    "check": "node --check src/index.js"
+    "build": "node scripts/build.mjs",
+    "check": "npm run build && node --check dist/index.js",
+    "prepack": "npm run build"
   },
   "engines": {
     "node": ">=20"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
   }
 }
