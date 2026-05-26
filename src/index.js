@@ -120,6 +120,30 @@ export default async function openRouterAuthBrokerPlugin(_ctx, options = {}) {
   return {
     auth: {
       provider: providerID,
+      async loader(getAuth) {
+        const auth = await getAuth();
+        if (auth?.type === 'api' && auth.key) {
+          return {
+            apiKey: 'opencode-openrouter-auth-broker',
+            async fetch(input, init = {}) {
+              const headers = new Headers(input instanceof Request ? input.headers : undefined);
+              if (init.headers) {
+                const entries = init.headers instanceof Headers
+                  ? init.headers.entries()
+                  : Array.isArray(init.headers)
+                    ? init.headers
+                    : Object.entries(init.headers);
+                for (const [key, value] of entries) {
+                  if (value !== undefined) headers.set(key, String(value));
+                }
+              }
+              headers.set('Authorization', `Bearer ${auth.key}`);
+              return fetch(input, { ...init, headers });
+            },
+          };
+        }
+        return {};
+      },
       methods: [
         {
           type: 'oauth',
@@ -162,6 +186,12 @@ export default async function openRouterAuthBrokerPlugin(_ctx, options = {}) {
           label: 'Paste OpenRouter API key',
         },
       ],
+    },
+    config(config) {
+      const provider = config.provider?.[providerID];
+      if (provider?.options?.apiKey === '') {
+        delete provider.options.apiKey;
+      }
     },
   };
 }
