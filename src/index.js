@@ -133,6 +133,13 @@ async function rotateCredentials(brokerUrl, refreshToken) {
   return body;
 }
 
+async function validateOpenRouterKey(baseURL, apiKey) {
+  const response = await fetch(brokerEndpoint(baseURL || 'https://openrouter.ai/api/v1', '/key'), {
+    headers: { Authorization: `Bearer ${apiKey}` },
+  });
+  return response.ok;
+}
+
 async function runBrokerLogin({ brokerUrl, authPort, startHeaders, autoOpenBrowser }) {
   if (!brokerUrl) throw new Error('Missing required plugin option: brokerUrl');
   const callback = await startCallbackServer(authPort);
@@ -179,9 +186,20 @@ export default async function openRouterAuthBrokerPlugin(ctx, options = {}) {
   return {
     auth: {
       provider: providerID,
-      async loader(getAuth) {
+      async loader(getAuth, provider) {
         const auth = await getAuth();
         if (auth?.type === 'api' && auth.key) {
+          const expiresAt = auth.metadata?.openrouter_key_expires_at;
+          const expiresSoon = expiresAt ? Date.parse(expiresAt) < Date.now() + 24 * 60 * 60 * 1000 : false;
+          const validateOnLoad = options.validateOnLoad !== false;
+          const valid = validateOnLoad && !expiresSoon
+            ? await validateOpenRouterKey(provider?.options?.baseURL, auth.key).catch(() => true)
+            : true;
+          if ((expiresSoon || !valid) && auth.metadata?.broker_refresh_token) {
+            const credentials = await rotateCredentials(brokerUrl, auth.metadata.broker_refresh_token);
+            await saveOpenCodeAuth(ctx.client, providerID, credentials);
+            return { apiKey: credentials.openrouter_api_key };
+          }
           return { apiKey: auth.key };
         }
         return {};

@@ -82,4 +82,4 @@ Set `autoLogin: true` to have the plugin start the same browser auth flow automa
 
 ## Revoked Key Handling
 
-Revoked-key refresh is planned, but not enabled in the current version. If a broker-managed OpenRouter key is revoked directly in OpenRouter, re-run the browser sign-in flow to mint a fresh key.
+On provider load, the plugin validates the stored OpenRouter key. If OpenRouter rejects it and a `broker_refresh_token` is available in auth metadata, the plugin rotates the key through the broker before the model request is sent. Set `validateOnLoad: false` to skip this validation call.
