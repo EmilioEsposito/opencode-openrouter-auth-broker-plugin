@@ -1,6 +1,6 @@
 {
   "name": "opencode-openrouter-auth-broker-plugin",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": false,
   "type": "module",
   "description": "OpenCode plugin for custom broker-managed OpenRouter credentials",
@@ -21,6 +21,7 @@
     "broker",
     "plugin"
   ],
+  "main": "./dist/index.js",
   "exports": "./dist/index.js",
   "files": [
     "dist",
