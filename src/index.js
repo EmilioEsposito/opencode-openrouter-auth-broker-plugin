@@ -121,6 +121,18 @@ async function exchangeCode(brokerUrl, code) {
   return body;
 }
 
+async function rotateCredentials(brokerUrl, refreshToken) {
+  const response = await fetch(brokerEndpoint(brokerUrl, '/credentials/rotate'), {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${refreshToken}` },
+  });
+  const body = await response.json();
+  if (!response.ok) {
+    throw new Error(body.detail || body.error?.message || `Credential rotation failed with ${response.status}`);
+  }
+  return body;
+}
+
 async function runBrokerLogin({ brokerUrl, authPort, startHeaders, autoOpenBrowser }) {
   if (!brokerUrl) throw new Error('Missing required plugin option: brokerUrl');
   const callback = await startCallbackServer(authPort);
@@ -173,19 +185,31 @@ export default async function openRouterAuthBrokerPlugin(ctx, options = {}) {
           return {
             apiKey: 'opencode-openrouter-auth-broker',
             async fetch(input, init = {}) {
-              const headers = new Headers(input instanceof Request ? input.headers : undefined);
-              if (init.headers) {
-                const entries = init.headers instanceof Headers
-                  ? init.headers.entries()
-                  : Array.isArray(init.headers)
-                    ? init.headers
-                    : Object.entries(init.headers);
-                for (const [key, value] of entries) {
-                  if (value !== undefined) headers.set(key, String(value));
+              const buildHeaders = (apiKey) => {
+                const headers = new Headers(input instanceof Request ? input.headers : undefined);
+                if (init.headers) {
+                  const entries = init.headers instanceof Headers
+                    ? init.headers.entries()
+                    : Array.isArray(init.headers)
+                      ? init.headers
+                      : Object.entries(init.headers);
+                  for (const [key, value] of entries) {
+                    if (value !== undefined) headers.set(key, String(value));
+                  }
                 }
-              }
-              headers.set('Authorization', `Bearer ${auth.key}`);
-              return fetch(input, { ...init, headers });
+                headers.set('Authorization', `Bearer ${apiKey}`);
+                return headers;
+              };
+
+              let headers = buildHeaders(auth.key);
+              let response = await fetch(input, { ...init, headers });
+              if (response.status !== 401 || !auth.metadata?.broker_refresh_token) return response;
+
+              const credentials = await rotateCredentials(brokerUrl, auth.metadata.broker_refresh_token);
+              await saveOpenCodeAuth(ctx.client, providerID, credentials);
+              headers = buildHeaders(credentials.openrouter_api_key);
+              response = await fetch(input, { ...init, headers });
+              return response;
             },
           };
         }

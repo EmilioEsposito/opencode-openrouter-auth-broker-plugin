@@ -79,3 +79,7 @@ Set `autoLogin: true` to have the plugin start the same browser auth flow automa
   "autoLogin": true
 }
 ```
+
+## Revoked Key Handling
+
+If OpenRouter returns `401` for a stored broker-managed key, the plugin will use the stored `broker_refresh_token` metadata to call the broker's `/credentials/rotate` endpoint, save the refreshed OpenRouter API key back into OpenCode auth, and retry the request once.
