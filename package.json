@@ -1,6 +1,6 @@
 {
   "name": "opencode-openrouter-auth-broker-plugin",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "private": false,
   "type": "module",
   "description": "OpenCode plugin for custom broker-managed OpenRouter credentials",
