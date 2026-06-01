@@ -10,6 +10,7 @@ The broker is expected to implement:
 
 - `GET /auth/openrouter/start?return_to=http://127.0.0.1:<port>/callback`
 - `POST /auth/openrouter/credential` with `{ "code": "..." }`
+- `POST /credentials/rotate` with `Authorization: Bearer <broker_refresh_token>`
 
 The credential exchange response must include:
 
@@ -83,3 +84,5 @@ Set `autoLogin: true` to have the plugin start the same browser auth flow automa
 ## Revoked Key Handling
 
 On provider load, the plugin validates the stored OpenRouter key. If OpenRouter rejects it and a `broker_refresh_token` is available in auth metadata, the plugin rotates the key through the broker before the model request is sent. Set `validateOnLoad: false` to skip this validation call.
+
+If an inference request still reaches OpenRouter with an expired or revoked stored key, the plugin traps a `401` response. It first re-reads OpenCode auth and retries with a newer stored key if another OpenCode instance already refreshed it. If auth still contains the stale key, it rotates credentials through the broker, saves the replacement key to OpenCode auth, and retries the request once.

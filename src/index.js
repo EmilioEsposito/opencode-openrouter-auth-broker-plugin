@@ -130,7 +130,10 @@ async function rotateCredentials(brokerUrl, refreshToken) {
   if (!response.ok) {
     throw new Error(body.detail || body.error?.message || `Credential rotation failed with ${response.status}`);
   }
-  return body;
+  return {
+    ...body,
+    broker_refresh_token: body.broker_refresh_token ?? refreshToken,
+  };
 }
 
 async function validateOpenRouterKey(baseURL, apiKey) {
@@ -173,6 +176,19 @@ async function saveOpenCodeAuth(client, providerID, credentials) {
   } catch {}
 }
 
+async function readOpenCodeAuth(client, providerID) {
+  if (!client?.auth?.get) return;
+  try {
+    const response = await client.auth.get({ path: { id: providerID } });
+    return response?.data ?? response;
+  } catch {}
+
+  try {
+    const response = await client.auth.get({ providerID });
+    return response?.data ?? response;
+  } catch {}
+}
+
 export default async function openRouterAuthBrokerPlugin(ctx, options = {}) {
   const providerID = options.providerID ?? DEFAULT_PROVIDER_ID;
   const brokerUrl = options.brokerUrl;
@@ -182,13 +198,73 @@ export default async function openRouterAuthBrokerPlugin(ctx, options = {}) {
   const autoLogin = options.autoLogin === true;
   let autoLoginPromise;
   let cachedApiKey;
+  let cachedRefreshToken;
+  let refreshPromise;
+  let latestGetAuth;
+
+  function rememberCredentials(credentials) {
+    cachedApiKey = credentials.openrouter_api_key;
+    cachedRefreshToken = credentials.broker_refresh_token ?? cachedRefreshToken;
+  }
+
+  function cloneFetchInput(input) {
+    return input instanceof Request ? input.clone() : input;
+  }
+
+  async function refreshCredentials() {
+    if (!cachedRefreshToken) return;
+    refreshPromise ??= rotateCredentials(brokerUrl, cachedRefreshToken)
+      .then(async (credentials) => {
+        rememberCredentials(credentials);
+        await saveOpenCodeAuth(ctx.client, providerID, credentials);
+        return credentials;
+      })
+      .finally(() => {
+        refreshPromise = undefined;
+      });
+    return refreshPromise;
+  }
+
+  async function readStoredAuth() {
+    if (latestGetAuth) {
+      try {
+        return await latestGetAuth();
+      } catch {}
+    }
+    return readOpenCodeAuth(ctx.client, providerID);
+  }
+
+  async function refreshAndRetryOnUnauthorized(response, input, init, headers, fetcher) {
+    if (response.status !== 401 || !cachedRefreshToken) return response;
+
+    const staleAuthorization = headers.get('Authorization');
+    const latestAuth = await readStoredAuth();
+    if (latestAuth?.type === 'api' && latestAuth.key && `Bearer ${latestAuth.key}` !== staleAuthorization) {
+      cachedApiKey = latestAuth.key;
+      cachedRefreshToken = latestAuth.metadata?.broker_refresh_token ?? cachedRefreshToken;
+      headers.set('Authorization', `Bearer ${latestAuth.key}`);
+      return fetcher(cloneFetchInput(input), { ...init, headers });
+    }
+
+    const credentials = await refreshCredentials().catch((error) => {
+      console.error(`OpenRouter broker credential rotation failed after 401: ${error.message}`);
+      return undefined;
+    });
+    if (!credentials?.openrouter_api_key) return response;
+
+    headers.set('Authorization', `Bearer ${credentials.openrouter_api_key}`);
+    return fetcher(cloneFetchInput(input), { ...init, headers });
+  }
 
   return {
     auth: {
       provider: providerID,
       async loader(getAuth, provider) {
+        latestGetAuth = getAuth;
         const auth = await getAuth();
         if (auth?.type === 'api' && auth.key) {
+          cachedApiKey = auth.key;
+          cachedRefreshToken = auth.metadata?.broker_refresh_token ?? cachedRefreshToken;
           const expiresAt = auth.metadata?.openrouter_key_expires_at;
           const expiresSoon = expiresAt ? Date.parse(expiresAt) < Date.now() + 24 * 60 * 60 * 1000 : false;
           const validateOnLoad = options.validateOnLoad !== false;
@@ -196,8 +272,7 @@ export default async function openRouterAuthBrokerPlugin(ctx, options = {}) {
             ? await validateOpenRouterKey(provider?.options?.baseURL, auth.key).catch(() => true)
             : true;
           if ((expiresSoon || !valid) && auth.metadata?.broker_refresh_token) {
-            const credentials = await rotateCredentials(brokerUrl, auth.metadata.broker_refresh_token);
-            await saveOpenCodeAuth(ctx.client, providerID, credentials);
+            const credentials = await refreshCredentials();
             return { apiKey: credentials.openrouter_api_key };
           }
           return { apiKey: auth.key };
@@ -266,15 +341,17 @@ export default async function openRouterAuthBrokerPlugin(ctx, options = {}) {
           }
         }
 
+        const fetcher = configuredFetch ?? fetch;
         const existing = headers.get('Authorization');
         if (existing && existing !== 'Bearer ' && !existing.endsWith('undefined')) {
-          return (configuredFetch ?? fetch)(input, { ...init, headers });
+          const response = await fetcher(cloneFetchInput(input), { ...init, headers });
+          return refreshAndRetryOnUnauthorized(response, input, init, headers, fetcher);
         }
 
         if (!cachedApiKey) {
           autoLoginPromise ??= runBrokerLogin({ brokerUrl, authPort, startHeaders, autoOpenBrowser })
             .then(async (credentials) => {
-              cachedApiKey = credentials.openrouter_api_key;
+              rememberCredentials(credentials);
               await saveOpenCodeAuth(ctx.client, providerID, credentials);
               return credentials;
             })
@@ -285,7 +362,8 @@ export default async function openRouterAuthBrokerPlugin(ctx, options = {}) {
         }
 
         headers.set('Authorization', `Bearer ${cachedApiKey}`);
-        return (configuredFetch ?? fetch)(input, { ...init, headers });
+        const response = await fetcher(cloneFetchInput(input), { ...init, headers });
+        return refreshAndRetryOnUnauthorized(response, input, init, headers, fetcher);
       };
     },
   };
