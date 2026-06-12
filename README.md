@@ -86,3 +86,12 @@ Set `autoLogin: true` to have the plugin start the same browser auth flow automa
 On provider load, the plugin validates the stored OpenRouter key. If OpenRouter rejects it and a `broker_refresh_token` is available in auth metadata, the plugin rotates the key through the broker before the model request is sent. Set `validateOnLoad: false` to skip this validation call.
 
 If an inference request still reaches OpenRouter with an expired or revoked stored key, the plugin traps a `401` response. It first re-reads OpenCode auth and retries with a newer stored key if another OpenCode instance already refreshed it. If auth still contains the stale key, it rotates credentials through the broker, saves the replacement key to OpenCode auth, and retries the request once.
+
+## Publishing
+
+This package publishes through GitHub Actions trusted publishing from
+`.github/workflows/publish.yml`.
+
+For maintainer release steps and verification, use:
+
+- `.claude/skills/publish-package/SKILL.md`

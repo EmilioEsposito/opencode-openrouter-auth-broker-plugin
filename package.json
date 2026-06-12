@@ -7,7 +7,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+ssh://git@github.com/EmilioEsposito/opencode-openrouter-auth-broker-plugin.git"
+    "url": "git+https://github.com/EmilioEsposito/opencode-openrouter-auth-broker-plugin.git"
   },
   "bugs": {
     "url": "https://github.com/EmilioEsposito/opencode-openrouter-auth-broker-plugin/issues"
