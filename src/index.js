@@ -143,6 +143,32 @@ async function validateOpenRouterKey(baseURL, apiKey) {
   return response.ok;
 }
 
+const DEFAULT_WEB_SEARCH_ENGINE = 'auto';
+const DEFAULT_WEB_SEARCH_MAX_RESULTS = 8;
+
+// Inject OpenRouter's `openrouter:web_search` server tool into an outbound
+// /chat/completions request body. This rides on the model's own request so the
+// model can search inline (same architecture as Claude Code's WebSearch:
+// model-decided, executed server-side, full conversation context). Returns the
+// mutated body string, or the original if injection isn't applicable / already
+// present. Never throws — web search must never break an inference request.
+function injectWebSearchTool(bodyText, { engine, maxResults, maxCharacters }) {
+  try {
+    if (typeof bodyText !== 'string' || !bodyText) return bodyText;
+    const body = JSON.parse(bodyText);
+    // Only chat/completions requests carry a messages array + tools.
+    if (!Array.isArray(body.messages)) return bodyText;
+    const tools = Array.isArray(body.tools) ? body.tools : [];
+    if (tools.some((t) => t && t.type === 'openrouter:web_search')) return bodyText;
+    const parameters = { engine, max_results: maxResults };
+    if (Number.isFinite(maxCharacters)) parameters.max_characters = maxCharacters;
+    body.tools = [...tools, { type: 'openrouter:web_search', parameters }];
+    return JSON.stringify(body);
+  } catch {
+    return bodyText;
+  }
+}
+
 async function runBrokerLogin({ brokerUrl, authPort, startHeaders, autoOpenBrowser }) {
   if (!brokerUrl) throw new Error('Missing required plugin option: brokerUrl');
   const callback = await startCallbackServer(authPort);
@@ -196,6 +222,17 @@ export default async function openRouterAuthBrokerPlugin(ctx, options = {}) {
   const startHeaders = Array.isArray(options.startHeaders) ? options.startHeaders : [];
   const autoOpenBrowser = options.openBrowser !== false;
   const autoLogin = options.autoLogin === true;
+  const webSearchEnabled = options.webSearch !== false;
+  const webSearchEngine = options.webSearchEngine ?? DEFAULT_WEB_SEARCH_ENGINE;
+  const webSearchMaxResults = Number(options.webSearchMaxResults ?? DEFAULT_WEB_SEARCH_MAX_RESULTS);
+  const webSearchMaxCharacters = options.webSearchMaxCharacters != null
+    ? Number(options.webSearchMaxCharacters)
+    : undefined;
+  const webSearchParams = {
+    engine: webSearchEngine,
+    maxResults: webSearchMaxResults,
+    maxCharacters: webSearchMaxCharacters,
+  };
   let autoLoginPromise;
   let cachedApiKey;
   let cachedRefreshToken;
@@ -325,10 +362,21 @@ export default async function openRouterAuthBrokerPlugin(ctx, options = {}) {
       if (provider.options.apiKey === '') {
         delete provider.options.apiKey;
       }
-      if (!autoLogin) return;
+      // Install the fetch wrapper when auto-login OR web search is enabled. Web
+      // search injects the openrouter:web_search server tool into the outbound
+      // request body so the model can search inline.
+      if (!autoLogin && !webSearchEnabled) return;
 
       const configuredFetch = provider.options.fetch;
       provider.options.fetch = async (input, init = {}) => {
+        // Best-effort inline web search injection (never throws, fails open).
+        if (webSearchEnabled) {
+          const url = input instanceof Request ? input.url : String(input ?? '');
+          if (url.includes('/chat/completions') && typeof init.body === 'string') {
+            init = { ...init, body: injectWebSearchTool(init.body, webSearchParams) };
+          }
+        }
+
         const headers = new Headers(input instanceof Request ? input.headers : undefined);
         if (init.headers) {
           const entries = init.headers instanceof Headers
@@ -344,6 +392,13 @@ export default async function openRouterAuthBrokerPlugin(ctx, options = {}) {
         const fetcher = configuredFetch ?? fetch;
         const existing = headers.get('Authorization');
         if (existing && existing !== 'Bearer ' && !existing.endsWith('undefined')) {
+          const response = await fetcher(cloneFetchInput(input), { ...init, headers });
+          return refreshAndRetryOnUnauthorized(response, input, init, headers, fetcher);
+        }
+
+        // No usable Authorization yet. If auto-login is off, just forward (the
+        // broker's auth loader supplies the key through OpenCode's normal flow).
+        if (!autoLogin) {
           const response = await fetcher(cloneFetchInput(input), { ...init, headers });
           return refreshAndRetryOnUnauthorized(response, input, init, headers, fetcher);
         }

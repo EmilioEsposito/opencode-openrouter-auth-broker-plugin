@@ -87,6 +87,62 @@ On provider load, the plugin validates the stored OpenRouter key. If OpenRouter 
 
 If an inference request still reaches OpenRouter with an expired or revoked stored key, the plugin traps a `401` response. It first re-reads OpenCode auth and retries with a newer stored key if another OpenCode instance already refreshed it. If auth still contains the stale key, it rotates credentials through the broker, saves the replacement key to OpenCode auth, and retries the request once.
 
+## Web Search
+
+The plugin can give your session model inline web search backed by OpenRouter's
+(non-deprecated)
+[`openrouter:web_search` server tool](https://openrouter.ai/docs/guides/features/server-tools/web-search).
+It works like Claude Code's WebSearch: the capability is offered on every turn,
+but the model only searches when it decides it needs current information, and the
+search runs **inside the model's own completion** with full conversation context
+— no second model call, no separate search vendor, no telemetry.
+
+Mechanism: the plugin's outbound `fetch` wrapper appends
+`{ "type": "openrouter:web_search", ... }` to the `tools` array of each
+`/chat/completions` request for this provider. OpenRouter executes the search
+server-side under the broker-managed key and returns the grounded answer with
+`url_citation` annotations. Injection is best-effort and fails open — it never
+breaks an inference request.
+
+It is enabled by default. Disable it with `webSearch: false`.
+
+```json
+{
+  "plugin": [
+    [
+      "opencode-openrouter-auth-broker-plugin",
+      {
+        "providerID": "openrouter-broker",
+        "brokerUrl": "https://your-broker.example.com",
+        "webSearch": true,
+        "webSearchEngine": "auto",
+        "webSearchMaxResults": 8
+      }
+    ]
+  ]
+}
+```
+
+Web search options (all optional):
+
+| Option                   | Default  | Description                                                                                                                        |
+| ------------------------ | -------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `webSearch`              | `true`   | Set `false` to not inject the web search server tool.                                                                             |
+| `webSearchEngine`        | `"auto"` | `auto` \| `native` \| `exa` \| `firecrawl` \| `parallel` \| `perplexity`. `auto` uses native provider search, falling back to Exa. |
+| `webSearchMaxResults`    | `8`      | Max results per search (1–25).                                                                                                     |
+| `webSearchMaxCharacters` | _unset_  | Optional per-result character cap forwarded to OpenRouter.                                                                         |
+
+The search runs through OpenRouter under the broker-managed key. With
+`webSearchEngine: "auto"`, native-search-capable providers (Anthropic, OpenAI,
+Google, …) serve the search themselves; models without native search fall back
+to Exa via OpenRouter's server-side key, never an unauthenticated consumer
+search endpoint.
+
+> **Visibility note:** because the search is a server-side tool executed inside
+> the completion, OpenCode does not render it as a separate tool-call line.
+> Grounding surfaces as inline citations in the model's answer rather than a
+> visible "web search" step.
+
 ## Publishing
 
 This package publishes through GitHub Actions trusted publishing from
