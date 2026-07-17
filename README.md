@@ -87,6 +87,8 @@ On provider load, the plugin validates the stored OpenRouter key. If OpenRouter 
 
 If an inference request still reaches OpenRouter with an expired or revoked stored key, the plugin traps a `401` response. It first re-reads OpenCode auth and retries with a newer stored key if another OpenCode instance already refreshed it. If auth still contains the stale key, it rotates credentials through the broker, saves the replacement key to OpenCode auth, and retries the request once.
 
+Provider loading fails open when the broker is temporarily unreachable: OpenCode keeps the configured provider visible with its stored key instead of failing startup. A later request that receives `401` retries broker rotation, so the provider recovers without editing config or signing in again after broker connectivity returns. Broker and OpenRouter credential-management requests are bounded to 10 seconds by default; set `requestTimeoutMs` to a positive millisecond value to override that limit.
+
 ## Web Search
 
 The plugin can give your session model inline web search backed by OpenRouter's
