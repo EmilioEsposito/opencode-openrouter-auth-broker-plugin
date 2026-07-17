@@ -3,9 +3,22 @@ import http from 'node:http';
 
 const DEFAULT_PROVIDER_ID = 'openrouter-broker';
 const DEFAULT_AUTH_PORT = 0;
+const DEFAULT_REQUEST_TIMEOUT_MS = 10000;
 
 function brokerEndpoint(brokerUrl, path) {
   return `${String(brokerUrl).replace(/\/$/, '')}${path}`;
+}
+
+function requestTimeout(value) {
+  const parsed = Number(value ?? DEFAULT_REQUEST_TIMEOUT_MS);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : DEFAULT_REQUEST_TIMEOUT_MS;
+}
+
+function fetchWithTimeout(input, init = {}, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS) {
+  return fetch(input, {
+    ...init,
+    signal: init.signal ?? AbortSignal.timeout(timeoutMs),
+  });
 }
 
 function parseStartHeaders(values = []) {
@@ -73,16 +86,16 @@ function startCallbackServer(port, path = '/callback') {
   });
 }
 
-async function resolveAuthUrl({ brokerUrl, returnTo, startHeaders }) {
+async function resolveAuthUrl({ brokerUrl, returnTo, startHeaders, requestTimeoutMs }) {
   const authUrl = new URL(brokerEndpoint(brokerUrl, '/auth/openrouter/start'));
   authUrl.searchParams.set('return_to', returnTo);
 
   if (!startHeaders?.length) return authUrl.toString();
 
-  const response = await fetch(authUrl, {
+  const response = await fetchWithTimeout(authUrl, {
     redirect: 'manual',
     headers: parseStartHeaders(startHeaders),
-  });
+  }, requestTimeoutMs);
 
   if (![301, 302, 303, 307, 308].includes(response.status)) {
     const text = await response.text();
@@ -108,12 +121,12 @@ function openBrowser(url) {
   execFile('xdg-open', [url]);
 }
 
-async function exchangeCode(brokerUrl, code) {
-  const response = await fetch(brokerEndpoint(brokerUrl, '/auth/openrouter/credential'), {
+async function exchangeCode(brokerUrl, code, requestTimeoutMs) {
+  const response = await fetchWithTimeout(brokerEndpoint(brokerUrl, '/auth/openrouter/credential'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ code }),
-  });
+  }, requestTimeoutMs);
   const body = await response.json();
   if (!response.ok) {
     throw new Error(body.detail || body.error?.message || `Credential exchange failed with ${response.status}`);
@@ -121,11 +134,11 @@ async function exchangeCode(brokerUrl, code) {
   return body;
 }
 
-async function rotateCredentials(brokerUrl, refreshToken) {
-  const response = await fetch(brokerEndpoint(brokerUrl, '/credentials/rotate'), {
+async function rotateCredentials(brokerUrl, refreshToken, requestTimeoutMs) {
+  const response = await fetchWithTimeout(brokerEndpoint(brokerUrl, '/credentials/rotate'), {
     method: 'POST',
     headers: { Authorization: `Bearer ${refreshToken}` },
-  });
+  }, requestTimeoutMs);
   const body = await response.json();
   if (!response.ok) {
     throw new Error(body.detail || body.error?.message || `Credential rotation failed with ${response.status}`);
@@ -136,10 +149,10 @@ async function rotateCredentials(brokerUrl, refreshToken) {
   };
 }
 
-async function validateOpenRouterKey(baseURL, apiKey) {
-  const response = await fetch(brokerEndpoint(baseURL || 'https://openrouter.ai/api/v1', '/key'), {
+async function validateOpenRouterKey(baseURL, apiKey, requestTimeoutMs) {
+  const response = await fetchWithTimeout(brokerEndpoint(baseURL || 'https://openrouter.ai/api/v1', '/key'), {
     headers: { Authorization: `Bearer ${apiKey}` },
-  });
+  }, requestTimeoutMs);
   return response.ok;
 }
 
@@ -169,14 +182,14 @@ function injectWebSearchTool(bodyText, { engine, maxResults, maxCharacters }) {
   }
 }
 
-async function runBrokerLogin({ brokerUrl, authPort, startHeaders, autoOpenBrowser }) {
+async function runBrokerLogin({ brokerUrl, authPort, startHeaders, autoOpenBrowser, requestTimeoutMs }) {
   if (!brokerUrl) throw new Error('Missing required plugin option: brokerUrl');
   const callback = await startCallbackServer(authPort);
   const returnTo = `http://127.0.0.1:${callback.port}/callback`;
-  const url = await resolveAuthUrl({ brokerUrl, returnTo, startHeaders });
+  const url = await resolveAuthUrl({ brokerUrl, returnTo, startHeaders, requestTimeoutMs });
   if (autoOpenBrowser) openBrowser(url);
   const code = await callback.callbackPromise;
-  return exchangeCode(brokerUrl, code);
+  return exchangeCode(brokerUrl, code, requestTimeoutMs);
 }
 
 async function saveOpenCodeAuth(client, providerID, credentials) {
@@ -228,6 +241,7 @@ export default async function openRouterAuthBrokerPlugin(ctx, options = {}) {
   const webSearchMaxCharacters = options.webSearchMaxCharacters != null
     ? Number(options.webSearchMaxCharacters)
     : undefined;
+  const requestTimeoutMs = requestTimeout(options.requestTimeoutMs);
   const webSearchParams = {
     engine: webSearchEngine,
     maxResults: webSearchMaxResults,
@@ -250,7 +264,7 @@ export default async function openRouterAuthBrokerPlugin(ctx, options = {}) {
 
   async function refreshCredentials() {
     if (!cachedRefreshToken) return;
-    refreshPromise ??= rotateCredentials(brokerUrl, cachedRefreshToken)
+    refreshPromise ??= rotateCredentials(brokerUrl, cachedRefreshToken, requestTimeoutMs)
       .then(async (credentials) => {
         rememberCredentials(credentials);
         await saveOpenCodeAuth(ctx.client, providerID, credentials);
@@ -306,11 +320,17 @@ export default async function openRouterAuthBrokerPlugin(ctx, options = {}) {
           const expiresSoon = expiresAt ? Date.parse(expiresAt) < Date.now() + 24 * 60 * 60 * 1000 : false;
           const validateOnLoad = options.validateOnLoad !== false;
           const valid = validateOnLoad && !expiresSoon
-            ? await validateOpenRouterKey(provider?.options?.baseURL, auth.key).catch(() => true)
+            ? await validateOpenRouterKey(provider?.options?.baseURL, auth.key, requestTimeoutMs).catch(() => true)
             : true;
           if ((expiresSoon || !valid) && auth.metadata?.broker_refresh_token) {
-            const credentials = await refreshCredentials();
-            return { apiKey: credentials.openrouter_api_key };
+            const credentials = await refreshCredentials().catch((error) => {
+              console.error(
+                `OpenRouter broker credential rotation failed during provider load; `
+                + `keeping the provider available for request-time recovery: ${error.message}`,
+              );
+              return undefined;
+            });
+            if (credentials?.openrouter_api_key) return { apiKey: credentials.openrouter_api_key };
           }
           return { apiKey: auth.key };
         }
@@ -321,7 +341,13 @@ export default async function openRouterAuthBrokerPlugin(ctx, options = {}) {
           type: 'oauth',
           label: 'Browser sign-in',
           async authorize() {
-            const loginPromise = runBrokerLogin({ brokerUrl, authPort, startHeaders, autoOpenBrowser });
+            const loginPromise = runBrokerLogin({
+              brokerUrl,
+              authPort,
+              startHeaders,
+              autoOpenBrowser,
+              requestTimeoutMs,
+            });
 
             return {
               url: 'about:blank',
@@ -404,7 +430,13 @@ export default async function openRouterAuthBrokerPlugin(ctx, options = {}) {
         }
 
         if (!cachedApiKey) {
-          autoLoginPromise ??= runBrokerLogin({ brokerUrl, authPort, startHeaders, autoOpenBrowser })
+          autoLoginPromise ??= runBrokerLogin({
+            brokerUrl,
+            authPort,
+            startHeaders,
+            autoOpenBrowser,
+            requestTimeoutMs,
+          })
             .then(async (credentials) => {
               rememberCredentials(credentials);
               await saveOpenCodeAuth(ctx.client, providerID, credentials);

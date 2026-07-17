@@ -30,6 +30,7 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "check": "npm run build && node --check dist/index.js",
+    "test": "node --test",
     "prepack": "npm run build"
   },
   "engines": {
