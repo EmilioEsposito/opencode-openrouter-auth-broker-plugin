@@ -44,7 +44,7 @@ async function createPlugin(options = {}) {
       },
     },
     {
-      providerID: 'lz-openrouter',
+      providerID: 'broker-openrouter',
       brokerUrl: 'https://broker.example/api',
       autoLogin: true,
       ...options,
@@ -114,7 +114,7 @@ test('expired credential self-heals on the next 401 after broker connectivity re
   let inferenceCalls = 0;
   const config = {
     provider: {
-      'lz-openrouter': {
+      'broker-openrouter': {
         options: {
           async fetch(_input, init) {
             inferenceCalls += 1;
@@ -132,7 +132,7 @@ test('expired credential self-heals on the next 401 after broker connectivity re
   };
   plugin.config(config);
 
-  const response = await config.provider['lz-openrouter'].options.fetch(
+  const response = await config.provider['broker-openrouter'].options.fetch(
     'https://openrouter.ai/api/v1/chat/completions',
     { headers: { Authorization: `Bearer ${auth.key}` } },
   );
@@ -141,7 +141,7 @@ test('expired credential self-heals on the next 401 after broker connectivity re
   assert.equal(brokerCalls, 2);
   assert.equal(inferenceCalls, 2);
   assert.equal(saved.length, 1);
-  assert.equal(saved[0].path.id, 'lz-openrouter');
+  assert.equal(saved[0].path.id, 'broker-openrouter');
   assert.equal(saved[0].body.key, 'sk-or-v1-recovered');
   assert.equal(saved[0].body.metadata.broker_refresh_token, 'broker-refresh-token');
   assert.equal(errors.length, 1);
